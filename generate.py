@@ -1,65 +1,58 @@
 import requests
-from datetime import datetime, timedelta
+from gtfs_realtime_bindings import FeedMessage
 from PIL import Image, ImageDraw, ImageFont
-from gtfs_realtime_pb2 import FeedMessage  # из gtfs-realtime-bindings
+import datetime
 
 STOP_ID = "70037"  # Sant Cugat Centre
+IMAGE_PATH = "fgc_sant_cugat_pocketbook.png"
 WIDTH, HEIGHT = 1072, 1448
-MARGIN = 60
-ROW_HEIGHT = 160
-
-def timer_text(dep_time):
-    delta = dep_time - datetime.now()
-    mins = int(delta.total_seconds() / 60)
-    if mins <= 0:
-        return "Сейчас"
-    elif mins < 60:
-        return f"{mins} мин"
-    else:
-        return f"{mins // 60} ч"
 
 def fetch_gtfs():
     url = "https://dadesobertes.fgc.cat/gtfs-realtime/trip-updates"
-    r = requests.get(url, timeout=10)
-    r.raise_for_status()
-
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
     feed = FeedMessage()
-    feed.ParseFromString(r.content)
+    feed.ParseFromString(response.content)
     return feed
 
 def parse_trains(feed):
     trains = []
-    now = datetime.now()
+    now = datetime.datetime.now()
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
             continue
 
-        tu = entity.trip_update
-        route_id = tu.trip.route_id
+        trip = entity.trip_update.trip
 
-        if route_id not in ("S1", "S2"):
+        # Без direction_id пропускаем (бывает)
+        direction_id = getattr(trip, "direction_id", None)
+        if direction_id is None:
             continue
 
-        direction_id = getattr(tu.trip, "direction_id", 0)
+        # Линия
+        route = trip.route_id
+        if route not in ("S1", "S2"):
+            continue
 
-        if route_id == "S1":
+        # Логика направлений
+        if route == "S1":
             direction = "Barcelona" if direction_id == 0 else "Terrassa"
-        else:
+        else:  # S2
             direction = "Barcelona" if direction_id == 0 else "Sabadell"
 
-        for stu in tu.stop_time_update:
+        # Парсим времена
+        for stu in entity.trip_update.stop_time_update:
             if stu.stop_id != STOP_ID:
                 continue
+
             if not stu.HasField("arrival"):
                 continue
 
-            arrival_time = datetime.fromtimestamp(stu.arrival.time)
-            if arrival_time <= now:
-                continue
+            arrival_time = stu.arrival.time
+            mins = int((arrival_time - now.timestamp()) / 60)
 
-            trains.append((direction, arrival_time))
-            break
+            trains.append((direction, mins))
 
     trains.sort(key=lambda x: x[1])
     return trains[:6]
@@ -68,56 +61,45 @@ def generate_image(trains):
     img = Image.new("L", (WIDTH, HEIGHT), 255)
     draw = ImageDraw.Draw(img)
 
-    try:
-        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 70)
-        dir_font = ImageFont.truetype("DejaVuSans.ttf", 80)
-        time_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 90)
-        logo_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 50)
-    except:
-        title_font = dir_font = time_font = logo_font = ImageFont.load_default()
+    # Универсальный безопасный шрифт
+    font_title = ImageFont.load_default()
+    font_text = ImageFont.load_default()
 
-    # Лого
-    logo_w, logo_h = 260, 90
-    logo_x, logo_y = WIDTH - MARGIN - logo_w, 40
-    draw.rectangle([logo_x, logo_y, logo_x + logo_w, logo_y + logo_h], fill=0)
-    draw.text((logo_x + 20, logo_y + 15), "FGC", fill=255, font=logo_font)
+    # Лого FGC
+    draw.rectangle((WIDTH - 260, 40, WIDTH - 20, 130), fill=0)
+    draw.text((WIDTH - 240, 65), "FGC", fill=255, font=font_title)
 
-    # Станция
-    y = 150
-    draw.text((MARGIN, y), "Sant Cugat Centre", fill=0, font=title_font)
-    y += 170
+    # Название станции
+    draw.text((50, 50), "Sant Cugat Centre", fill=0, font=font_title)
 
-    # Поезда
-    for direction, t in trains:
-        time_str = timer_text(t)
+    # Линия под заголовком
+    draw.line((50, 150, WIDTH - 50, 150), fill=0, width=3)
 
-        draw.text((MARGIN, y), direction, fill=0, font=dir_font)
+    # Время обновления
+    now_str = datetime.datetime.now().strftime("%H:%M")
+    draw.text((50, 160), f"Обновлено: {now_str}", fill=0, font=font_title)
 
-        bbox = draw.textbbox((0, 0), time_str, font=time_font)
-        time_w = bbox[2] - bbox[0]
-        x_time = WIDTH - MARGIN - time_w
+    # Список поездов
+    y = 250
+    for direction, mins in trains:
+        if mins <= 0:
+            t = "Сейчас"
+        else:
+            t = f"{mins} мин"
 
-        draw.text((x_time, y - 10), time_str, fill=0, font=time_font)
-        y += ROW_HEIGHT
+        draw.text((50, y), f"{direction}: {t}", fill=0, font=font_text)
+        y += 100
 
-    img.save("fgc_sant_cugat_pocketbook.png")
+    img.save(IMAGE_PATH)
 
 def main():
     try:
         feed = fetch_gtfs()
         trains = parse_trains(feed)
         if not trains:
-            raise Exception("No realtime trains")
-    except:
-        now = datetime.now()
-        trains = [
-            ("Barcelona", now + timedelta(minutes=3)),
-            ("Barcelona", now + timedelta(minutes=7)),
-            ("Terrassa", now + timedelta(minutes=12)),
-            ("Sabadell", now + timedelta(minutes=18)),
-            ("Barcelona", now + timedelta(minutes=25)),
-            ("Sabadell", now + timedelta(minutes=31))
-        ]
+            trains = [("Нет данных", 0)] * 6
+    except Exception:
+        trains = [("Резерв", i*10) for i in range(6)]
 
     generate_image(trains)
 
