@@ -2,14 +2,11 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
 
-# ============================
-# Настройки
-# ============================
-
 WIDTH = 1072
 HEIGHT = 1448
 
-STATION_ID = "081822"  # Sant Cugat Centre FGC
+STATION_ID = "081822"  # Sant Cugat Centre
+API_URL = f"https://app.fgc.cat/api/transit/estacions/{STATION_ID}"
 
 UA = {"User-Agent": "Mozilla/5.0 (PocketBookTablo)"}
 
@@ -20,26 +17,26 @@ OUTPUT_FILE = "fgc_sant_cugat_pocketbook.png"
 
 
 # ============================
-# Получение поездов FGC
+# Получение поездов (СТАБИЛЬНЫЙ API)
 # ============================
 
 def get_trains():
-    url = f"https://api.geotren.es/fgc/station/{STATION_ID}"
     trains = []
-
     try:
-        r = requests.get(url, headers=UA, timeout=10)
+        r = requests.get(API_URL, headers=UA, timeout=10)
         r.raise_for_status()
         data = r.json()
     except Exception as e:
         print("FGC API error:", e)
         return trains
 
-    departures = data.get("departures", [])
-    for dep in departures[:6]:  # только 6 строк
-        line = dep.get("line", "")
-        dest = dep.get("destination", "")
-        mins = dep.get("minutes", None)
+    # JSON-структура в этом API другая
+    departures = data.get("properCirculacions", [])
+
+    for dep in departures[:6]:
+        line = dep.get("linia", "")
+        dest = dep.get("destinacio", "")
+        mins = dep.get("minutsPerArribar", None)
 
         if not line or not dest or mins is None:
             continue
@@ -79,7 +76,10 @@ def generate_image(trains):
 
         right = "Сейчас" if mins == 0 else f"{mins} мин"
 
-        w, _ = draw.textsize(right, font=font_train)
+        # Вместо textsize — textbbox (новый Pillow)
+        bbox = draw.textbbox((0, 0), right, font=font_train)
+        w = bbox[2] - bbox[0]
+
         draw.text((WIDTH - 60 - w, y), right, font=font_train, fill="black")
 
         y += 120
@@ -93,6 +93,8 @@ def generate_image(trains):
 # ============================
 
 if __name__ == "__main__":
+    print("Запуск скрипта генерации...")
+
     trains = get_trains()
 
     # Если поездов меньше 6 — добавляем пустые строки
