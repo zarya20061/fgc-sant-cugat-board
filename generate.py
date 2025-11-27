@@ -1,21 +1,21 @@
 import requests
-from gtfs_realtime_bindings import FeedMessage
+from gtfs_realtime_bindings import gtfs_realtime_pb2
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime, timedelta
 
-# Константы
-STOP_ID = "70037"   # Sant Cugat Centre
+STOP_ID = "70037"
 IMAGE_PATH = "fgc_sant_cugat_pocketbook.png"
 WIDTH, HEIGHT = 1072, 1448
 MARGIN = 60
 ROW_HEIGHT = 160
 
-# ---------- GTFS REALTIME ----------
+# -------- GTFS REALTIME ----------
 def fetch_gtfs():
     url = "https://dadesobertes.fgc.cat/gtfs-realtime/trip-updates"
     r = requests.get(url, timeout=10)
     r.raise_for_status()
-    feed = FeedMessage()
+
+    feed = gtfs_realtime_pb2.FeedMessage()
     feed.ParseFromString(r.content)
     return feed
 
@@ -29,21 +29,18 @@ def parse_realtime(feed):
             continue
 
         tu = entity.trip_update
-
-        # Только S1 и S2
         route = tu.trip.route_id
+
         if route not in ("S1", "S2"):
             continue
 
-        # direction
         direction_id = getattr(tu.trip, "direction_id", 0)
 
         if route == "S1":
             direction = "Barcelona" if direction_id == 0 else "Terrassa"
-        else:  # S2
+        else:
             direction = "Barcelona" if direction_id == 0 else "Sabadell"
 
-        # stop updates
         for stu in tu.stop_time_update:
             if stu.stop_id != STOP_ID:
                 continue
@@ -61,7 +58,7 @@ def parse_realtime(feed):
     return departures[:6]
 
 
-# ---------- FALLBACK ----------
+# -------- FALLBACK ----------
 def fallback_schedule():
     now = datetime.now()
     static = {
@@ -82,7 +79,7 @@ def fallback_schedule():
     return deps[:6]
 
 
-# ---------- IMAGE RENDER ----------
+# -------- IMAGE ----------
 def minutes_left(dt):
     delta = dt - datetime.now()
     m = int(delta.total_seconds() / 60)
@@ -98,7 +95,6 @@ def generate_image(deps):
     img = Image.new("L", (WIDTH, HEIGHT), 255)
     draw = ImageDraw.Draw(img)
 
-    # Шрифты (работают на GitHub runners)
     try:
         font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 70)
         font_direction = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 80)
@@ -107,7 +103,7 @@ def generate_image(deps):
     except:
         font_title = font_direction = font_time = font_logo = ImageFont.load_default()
 
-    # Лого FGC
+    # ЛОГО
     logo_w, logo_h = 260, 90
     draw.rectangle([WIDTH - MARGIN - logo_w, 40, WIDTH - MARGIN, 40 + logo_h], fill=0)
     draw.text((WIDTH - MARGIN - logo_w + 20, 40 + 15), "FGC", font=font_logo, fill=255)
@@ -131,7 +127,7 @@ def generate_image(deps):
     img.save(IMAGE_PATH)
 
 
-# ---------- MAIN ----------
+# -------- MAIN ----------
 def main():
     try:
         feed = fetch_gtfs()
