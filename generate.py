@@ -1,147 +1,77 @@
+
 import requests
 from google.transit import gtfs_realtime_pb2
 from PIL import Image, ImageDraw, ImageFont
-from datetime import datetime, timedelta
+import datetime
 
-STOP_ID = "70037"
+STOP_ID = "70037"  # Sant Cugat Centre
 IMAGE_PATH = "fgc_sant_cugat_pocketbook.png"
 WIDTH, HEIGHT = 1072, 1448
-MARGIN = 60
-ROW_HEIGHT = 160
+LOGO_PATH = "fgc_logo.png"
 
-# -------- GTFS REALTIME ----------
 def fetch_gtfs():
     url = "https://dadesobertes.fgc.cat/gtfs-realtime/trip-updates"
-    r = requests.get(url, timeout=10)
-    r.raise_for_status()
-
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
     feed = gtfs_realtime_pb2.FeedMessage()
-    feed.ParseFromString(r.content)
+    feed.ParseFromString(response.content)
     return feed
 
-
-def parse_realtime(feed):
-    now = datetime.now()
-    departures = []
-
+def parse_trains(feed):
+    trains = []
+    now = datetime.datetime.now()
     for entity in feed.entity:
-        if not entity.HasField("trip_update"):
-            continue
+        for stop_time_update in entity.trip_update.stop_time_update:
+            if stop_time_update.stop_id == STOP_ID:
+                arrival = stop_time_update.arrival.time
+                remaining = int((arrival - now.timestamp()) / 60)
+                direction = "Barcelona" if entity.trip_update.trip.direction_id == 0 else "Terrassa/Sabadell"
+                trains.append((direction, remaining))
+    trains.sort(key=lambda x: x[1])
+    return trains[:6]
 
-        tu = entity.trip_update
-        route = tu.trip.route_id
-
-        if route not in ("S1", "S2"):
-            continue
-
-        direction_id = getattr(tu.trip, "direction_id", 0)
-
-        if route == "S1":
-            direction = "Barcelona" if direction_id == 0 else "Terrassa"
-        else:
-            direction = "Barcelona" if direction_id == 0 else "Sabadell"
-
-        for stu in tu.stop_time_update:
-            if stu.stop_id != STOP_ID:
-                continue
-            if not stu.HasField("arrival"):
-                continue
-
-            t_arr = datetime.fromtimestamp(stu.arrival.time)
-            if t_arr <= now:
-                continue
-
-            departures.append((direction, t_arr))
-            break
-
-    departures.sort(key=lambda x: x[1])
-    return departures[:6]
-
-
-# -------- FALLBACK ----------
-def fallback_schedule():
-    now = datetime.now()
-    static = {
-        "Barcelona": [3, 7, 25],
-        "Terrassa":  [12],
-        "Sabadell":  [18, 31]
-    }
-
-    deps = []
-    for direction, minutes in static.items():
-        for m in minutes:
-            t = now.replace(minute=m, second=0, microsecond=0)
-            if t <= now:
-                t += timedelta(hours=1)
-            deps.append((direction, t))
-
-    deps.sort(key=lambda x: x[1])
-    return deps[:6]
-
-
-# -------- IMAGE ----------
-def minutes_left(dt):
-    delta = dt - datetime.now()
-    m = int(delta.total_seconds() / 60)
-    if m <= 0:
-        return "Сейчас"
-    elif m < 60:
-        return f"{m} мин"
-    else:
-        return f"{m // 60} ч"
-
-
-def generate_image(deps):
-    img = Image.new("L", (WIDTH, HEIGHT), 255)
+def generate_image(trains):
+    img = Image.new("RGB", (WIDTH, HEIGHT), "white")
     draw = ImageDraw.Draw(img)
 
-    try:
-        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 70)
-        font_direction = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 80)
-        font_time = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 90)
-        font_logo = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 50)
-    except:
-        font_title = font_direction = font_time = font_logo = ImageFont.load_default()
+    font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 80)
+    font_subtitle = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 50)
+    font_text = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 70)
 
-    # ЛОГО
-    logo_w, logo_h = 260, 90
-    draw.rectangle([WIDTH - MARGIN - logo_w, 40, WIDTH - MARGIN, 40 + logo_h], fill=0)
-    draw.text((WIDTH - MARGIN - logo_w + 20, 40 + 15), "FGC", font=font_logo, fill=255)
+    # Логотип
+    try:
+        logo = Image.open(LOGO_PATH).convert("RGBA")
+        logo.thumbnail((200, 200))
+        img.paste(logo, (WIDTH - 220, 40), logo)
+    except FileNotFoundError:
+        draw.text((WIDTH - 300, 50), "[FGC]", font=font_subtitle, fill="black")
 
     # Заголовок
-    draw.text((MARGIN, 150), "Sant Cugat Centre", font=font_title, fill=0)
+    draw.text((50, 50), "Sant Cugat Centre", font=font_title, fill="black")
+    draw.line((50, 150, WIDTH - 50, 150), fill="black", width=4)
 
-    # Расписание
-    y = 320
-    for direction, t in deps:
-        timer = minutes_left(t)
+    # Время обновления
+    now_str = datetime.datetime.now().strftime("%H:%M")
+    draw.text((50, 160), f"Обновлено: {now_str}", font=font_subtitle, fill="gray")
 
-        draw.text((MARGIN, y), direction, font=font_direction, fill=0)
-
-        bbox = draw.textbbox((0, 0), timer, font=font_time)
-        timer_w = bbox[2] - bbox[0]
-        draw.text((WIDTH - MARGIN - timer_w, y - 10), timer, font=font_time, fill=0)
-
-        y += ROW_HEIGHT
+    # Список поездов
+    y = 250
+    for direction, mins in trains:
+        time_str = "Сейчас" if mins <= 0 else f"{mins} мин"
+        draw.text((50, y), f"{direction:<15} {time_str}", font=font_text, fill="black")
+        y += 120
 
     img.save(IMAGE_PATH)
 
-
-# -------- MAIN ----------
 def main():
     try:
         feed = fetch_gtfs()
-        deps = parse_realtime(feed)
-        if not deps:
-            deps = fallback_schedule()
-    except Exception as e:
-        print("REALTIME ERROR:", e)
-        deps = fallback_schedule()
-
-    generate_image(deps)
-    print("PNG GENERATED:", IMAGE_PATH)
-
+        trains = parse_trains(feed)
+        if not trains:
+            trains = [("Нет данных", 0)] * 6
+    except Exception:
+        trains = [("Резерв", i*10) for i in range(6)]
+    generate_image(trains)
 
 if __name__ == "__main__":
     main()
-
