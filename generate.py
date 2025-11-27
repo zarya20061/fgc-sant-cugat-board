@@ -1,5 +1,5 @@
 import requests
-from gtfs_realtime_bindings import gtfs_realtime_pb2
+from google.transit import gtfs_realtime_pb2
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime, timedelta
 
@@ -144,3 +144,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
