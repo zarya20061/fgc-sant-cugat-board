@@ -27,13 +27,14 @@ STATION_NAME = os.getenv('STATION_NAME', 'Sant Cugat Centre')
 GTFS_STATIC_URL = 'https://dadesobertes.fgc.cat/gtfs/google_transit.zip'
 GTFS_RT_URL = 'https://dadesobertes.fgc.cat/gtfs_rt/trip_updates'
 OUTPUT_FILE = 'board.png'
-IMAGE_SIZE = (800, 600)  # 6" landscape для PB 632
+IMAGE_SIZE = (800, 600)  # 6" landscape
 MAX_TRAINS = 10
 NEXT_HOURS = 1
 EINK_MODE = os.getenv('EINK_MODE', '1').lower() == '1'
 
 session = requests.Session()
 session.headers.update({'User-Agent': 'FGC-PB632/1.0'})
+
 
 def retry_request(url: str, max_retries: int = 3, timeout: int = 10) -> Optional[bytes]:
     """Запрос с retries и обработкой ошибок."""
@@ -48,6 +49,7 @@ def retry_request(url: str, max_retries: int = 3, timeout: int = 10) -> Optional
                 time.sleep(2 ** attempt)
     logger.error(f"Все retries failed: {url}")
     return None
+
 
 def get_stop_id(station_name: str) -> Optional[str]:
     """Stop_id из static GTFS."""
@@ -68,6 +70,7 @@ def get_stop_id(station_name: str) -> Optional[str]:
         logger.error(f"Ошибка stops.txt: {e}")
     return None
 
+
 def fetch_trains(stop_id: str) -> List[Dict[str, str]]:
     """Поезда из GTFS-RT (следующий час)."""
     data = retry_request(GTFS_RT_URL)
@@ -86,14 +89,18 @@ def fetch_trains(stop_id: str) -> List[Dict[str, str]]:
                     if (stu.stop_id == stop_id and
                         stu.HasField('arrival') and
                         now_ts < stu.arrival.time < end_ts):
+
                         headsign = tu.trip.headsign or tu.trip.route_id or '---'
                         route_type = tu.trip.route_id.split('_')[-1] if '_' in tu.trip.route_id else ''
-                        arr_time = datetime.fromtimestamp(stu.arrival.time, tz=timezone.utc).strftime('%H:%M')
+                        arr_time = datetime.fromtimestamp(
+                            stu.arrival.time, tz=timezone.utc).strftime('%H:%M')
+
                         trains.append({
                             'time': arr_time,
                             'dir': headsign,
                             'type': route_type
                         })
+
         trains.sort(key=lambda t: t['time'])
         logger.info(f"Получено {len(trains)} поездов")
         return trains[:MAX_TRAINS]
@@ -101,27 +108,31 @@ def fetch_trains(stop_id: str) -> List[Dict[str, str]]:
         logger.error(f"GTFS-RT парсинг: {e}")
         return []
 
+
+def text_width(draw, text, font):
+    """Ширина текста для правого выравнивания."""
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0]
+
+
 def generate_image(trains: List[Dict[str, str]], station: str):
     """PNG для E Ink PB 632 (B/W bitmap)."""
     if EINK_MODE:
-        img = Image.new('1', IMAGE_SIZE, 0)  # Black=0 bg
-        text_color = 255  # White
-        mode_str = "E Ink B/W"
+        img = Image.new('1', IMAGE_SIZE, 0)
+        text_color = 255
     else:
         img = Image.new('RGB', IMAGE_SIZE, 'black')
         text_color = 'white'
-        mode_str = "Color preview"
 
     draw = ImageDraw.Draw(img)
-    logger.info(f"Режим: {mode_str}")
 
-    # Шрифты (E Ink: жирные, крупные)
     font_paths = [
         '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
         '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
     ]
-    fonts = {}
     sizes = {'large': 64, 'med': 48, 'small': 32}
+    fonts = {}
+
     for name, size in sizes.items():
         font = None
         for path in font_paths:
@@ -138,38 +149,48 @@ def generate_image(trains: List[Dict[str, str]], station: str):
     font_med = fonts['med']
     font_small = fonts['small']
 
-    # Заголовок центр
-    bbox = draw.textbbox((0, 0), station, font=font_med)
-    text_w = bbox,[object Object], - bbox,[object Object],
-    draw.text((IMAGE_SIZE,[object Object], // 2 - text_w // 2, 20), station, fill=text_color, font=font_med)
+    # Заголовок
+    header_w = text_width(draw, station, font_med)
+    draw.text(((IMAGE_SIZE[0] - header_w) // 2, 20),
+              station, fill=text_color, font=font_med)
 
-    # Поезда
     y = 130
     for train in trains:
         time_text = train['time']
         dir_text = f"{train['dir']} {train['type']}".strip() or '---'
 
         # Время слева
-        bbox_time = draw.textbbox((0, 0), time_text, font=font_large)
         draw.text((60, y), time_text, fill=text_color, font=font_large)
 
-        # Направление справа (calc right align)
-        bbox_dir = draw.textbbox((0, 0), dir_text, font=font_med)
-        dir_w = bbox_dir,[object Object], - bbox_dir,[object Object],
-        draw.text((IMAGE_SIZE,[object Object], - 60 - dir_w, y), dir_text, fill=text_color, font=font_med)
+        # Направление справа
+        dir_w = text_width(draw, dir_text, font_med)
+        draw.text((IMAGE_SIZE[0] - dir_w - 60, y),
+                  dir_text, fill=text_color, font=font_med)
 
         y += 90
 
-    # No data
+    # No trains
     if not trains:
-        bbox = draw.textbbox((0, 0), "No trains", font=font_large)
-        text_w = bbox,[object Object], - bbox,[object Object],
-        draw.text((IMAGE_SIZE,[object Object], // 2 - text_w // 2, IMAGE_SIZE,[object Object], // 2), "No trains", fill=text_color, font=font_large)
+        t = "No trains"
+        t_w = text_width(draw, t, font_large)
+        draw.text(((IMAGE_SIZE[0] - t_w) // 2, IMAGE_SIZE[1] // 2),
+                  t, fill=text_color, font=font_large)
 
-    # Футер
+    # Футер — время генерации
     now_str = datetime.now().strftime('%d.%m %H:%M')
-    bbox = draw.textbbox((0, 0), now_str, font=font_small)
-    text_w = bbox,[object Object], - bbox,[object Object],
-    draw.text((IMAGE_SIZE,[object Object], // 2 - text_w // 2, IMAGE_SIZE,[object Object], - 70), now_str, fill=text_color, font=font_small)
+    f_w = text_width(draw, now_str, font_small)
+    draw.text(((IMAGE_SIZE[0] - f_w) // 2, IMAGE_SIZE[1] - 70),
+              now_str, fill=text_color, font=font_small)
 
-    img.save(OUTPUT_FILE, ,[object Object]
+    img.save(OUTPUT_FILE)
+    logger.info(f"PNG сохранён: {OUTPUT_FILE}")
+
+
+if __name__ == '__main__':
+    stop_id = get_stop_id(STATION_NAME)
+    if not stop_id:
+        logger.error("stop_id не найден; завершаю")
+        sys.exit(1)
+
+    trains = fetch_trains(stop_id)
+    generate_image(trains, STATION_NAME)
