@@ -1,6 +1,4 @@
-
 name: Generate FGC Board
-
 on:
   schedule:
     - cron: "* * * * *"
@@ -43,3 +41,4 @@ jobs:
             git push
           else
             echo "No changes detected"
+          fi
