@@ -5,7 +5,8 @@ on:
   schedule:
     - cron: "* * * * *" # запуск каждую минуту
   workflow_dispatch: # ручной запуск
-
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
