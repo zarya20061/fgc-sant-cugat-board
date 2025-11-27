@@ -1,107 +1,150 @@
 import requests
 from gtfs_realtime_bindings import FeedMessage
 from PIL import Image, ImageDraw, ImageFont
-import datetime
+from datetime import datetime, timedelta
 
-STOP_ID = "70037"  # Sant Cugat Centre
+# Константы
+STOP_ID = "70037"   # Sant Cugat Centre
 IMAGE_PATH = "fgc_sant_cugat_pocketbook.png"
 WIDTH, HEIGHT = 1072, 1448
+MARGIN = 60
+ROW_HEIGHT = 160
 
+# ---------- GTFS REALTIME ----------
 def fetch_gtfs():
     url = "https://dadesobertes.fgc.cat/gtfs-realtime/trip-updates"
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
+    r = requests.get(url, timeout=10)
+    r.raise_for_status()
     feed = FeedMessage()
-    feed.ParseFromString(response.content)
+    feed.ParseFromString(r.content)
     return feed
 
-def parse_trains(feed):
-    trains = []
-    now = datetime.datetime.now()
+
+def parse_realtime(feed):
+    now = datetime.now()
+    departures = []
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
             continue
 
-        trip = entity.trip_update.trip
+        tu = entity.trip_update
 
-        # Без direction_id пропускаем (бывает)
-        direction_id = getattr(trip, "direction_id", None)
-        if direction_id is None:
-            continue
-
-        # Линия
-        route = trip.route_id
+        # Только S1 и S2
+        route = tu.trip.route_id
         if route not in ("S1", "S2"):
             continue
 
-        # Логика направлений
+        # direction
+        direction_id = getattr(tu.trip, "direction_id", 0)
+
         if route == "S1":
             direction = "Barcelona" if direction_id == 0 else "Terrassa"
         else:  # S2
             direction = "Barcelona" if direction_id == 0 else "Sabadell"
 
-        # Парсим времена
-        for stu in entity.trip_update.stop_time_update:
+        # stop updates
+        for stu in tu.stop_time_update:
             if stu.stop_id != STOP_ID:
                 continue
-
             if not stu.HasField("arrival"):
                 continue
 
-            arrival_time = stu.arrival.time
-            mins = int((arrival_time - now.timestamp()) / 60)
+            t_arr = datetime.fromtimestamp(stu.arrival.time)
+            if t_arr <= now:
+                continue
 
-            trains.append((direction, mins))
+            departures.append((direction, t_arr))
+            break
 
-    trains.sort(key=lambda x: x[1])
-    return trains[:6]
+    departures.sort(key=lambda x: x[1])
+    return departures[:6]
 
-def generate_image(trains):
+
+# ---------- FALLBACK ----------
+def fallback_schedule():
+    now = datetime.now()
+    static = {
+        "Barcelona": [3, 7, 25],
+        "Terrassa":  [12],
+        "Sabadell":  [18, 31]
+    }
+
+    deps = []
+    for direction, minutes in static.items():
+        for m in minutes:
+            t = now.replace(minute=m, second=0, microsecond=0)
+            if t <= now:
+                t += timedelta(hours=1)
+            deps.append((direction, t))
+
+    deps.sort(key=lambda x: x[1])
+    return deps[:6]
+
+
+# ---------- IMAGE RENDER ----------
+def minutes_left(dt):
+    delta = dt - datetime.now()
+    m = int(delta.total_seconds() / 60)
+    if m <= 0:
+        return "Сейчас"
+    elif m < 60:
+        return f"{m} мин"
+    else:
+        return f"{m // 60} ч"
+
+
+def generate_image(deps):
     img = Image.new("L", (WIDTH, HEIGHT), 255)
     draw = ImageDraw.Draw(img)
 
-    # Универсальный безопасный шрифт
-    font_title = ImageFont.load_default()
-    font_text = ImageFont.load_default()
+    # Шрифты (работают на GitHub runners)
+    try:
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 70)
+        font_direction = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 80)
+        font_time = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 90)
+        font_logo = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 50)
+    except:
+        font_title = font_direction = font_time = font_logo = ImageFont.load_default()
 
     # Лого FGC
-    draw.rectangle((WIDTH - 260, 40, WIDTH - 20, 130), fill=0)
-    draw.text((WIDTH - 240, 65), "FGC", fill=255, font=font_title)
+    logo_w, logo_h = 260, 90
+    draw.rectangle([WIDTH - MARGIN - logo_w, 40, WIDTH - MARGIN, 40 + logo_h], fill=0)
+    draw.text((WIDTH - MARGIN - logo_w + 20, 40 + 15), "FGC", font=font_logo, fill=255)
 
-    # Название станции
-    draw.text((50, 50), "Sant Cugat Centre", fill=0, font=font_title)
+    # Заголовок
+    draw.text((MARGIN, 150), "Sant Cugat Centre", font=font_title, fill=0)
 
-    # Линия под заголовком
-    draw.line((50, 150, WIDTH - 50, 150), fill=0, width=3)
+    # Расписание
+    y = 320
+    for direction, t in deps:
+        timer = minutes_left(t)
 
-    # Время обновления
-    now_str = datetime.datetime.now().strftime("%H:%M")
-    draw.text((50, 160), f"Обновлено: {now_str}", fill=0, font=font_title)
+        draw.text((MARGIN, y), direction, font=font_direction, fill=0)
 
-    # Список поездов
-    y = 250
-    for direction, mins in trains:
-        if mins <= 0:
-            t = "Сейчас"
-        else:
-            t = f"{mins} мин"
+        bbox = draw.textbbox((0, 0), timer, font=font_time)
+        timer_w = bbox[2] - bbox[0]
+        draw.text((WIDTH - MARGIN - timer_w, y - 10), timer, font=font_time, fill=0)
 
-        draw.text((50, y), f"{direction}: {t}", fill=0, font=font_text)
-        y += 100
+        y += ROW_HEIGHT
 
     img.save(IMAGE_PATH)
 
+
+# ---------- MAIN ----------
 def main():
     try:
         feed = fetch_gtfs()
-        trains = parse_trains(feed)
-        if not trains:
-            trains = [("Нет данных", 0)] * 6
-    except Exception:
-        trains = [("Резерв", i*10) for i in range(6)]
+        deps = parse_realtime(feed)
+        if not deps:
+            deps = fallback_schedule()
+    except Exception as e:
+        print("REALTIME ERROR:", e)
+        deps = fallback_schedule()
 
-    generate_image(trains)
+    generate_image(deps)
+    print("PNG GENERATED:", IMAGE_PATH)
+
 
 if __name__ == "__main__":
     main()
