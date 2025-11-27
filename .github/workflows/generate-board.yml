@@ -44,3 +44,5 @@ jobs:
           else
             echo "No changes detected"
           fi
+      - name: List working dir
+        run: ls -la
