@@ -3,7 +3,7 @@ name: Generate FGC Board
 
 on:
   schedule:
-    - cron: "* * * * *" # запуск каждую минуту
+    - cron: "* * * * *"
   workflow_dispatch:
 
 jobs:
