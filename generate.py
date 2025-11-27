@@ -1,77 +1,55 @@
-
 import requests
-from google.transit import gtfs_realtime_pb2
 from PIL import Image, ImageDraw, ImageFont
-import datetime
+from datetime import datetime
 
-STOP_ID = "70037"  # Sant Cugat Centre
-IMAGE_PATH = "fgc_sant_cugat_pocketbook.png"
-WIDTH, HEIGHT = 1072, 1448
-LOGO_PATH = "fgc_logo.png"
+# ============================
+# Настройки
+# ============================
 
-def fetch_gtfs():
-    url = "https://dadesobertes.fgc.cat/gtfs-realtime/trip-updates"
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    feed = gtfs_realtime_pb2.FeedMessage()
-    feed.ParseFromString(response.content)
-    return feed
+WIDTH = 1072
+HEIGHT = 1448
 
-def parse_trains(feed):
-    trains = []
-    now = datetime.datetime.now()
-    for entity in feed.entity:
-        for stop_time_update in entity.trip_update.stop_time_update:
-            if stop_time_update.stop_id == STOP_ID:
-                arrival = stop_time_update.arrival.time
-                remaining = int((arrival - now.timestamp()) / 60)
-                direction = "Barcelona" if entity.trip_update.trip.direction_id == 0 else "Terrassa/Sabadell"
-                trains.append((direction, remaining))
-    trains.sort(key=lambda x: x[1])
-    return trains[:6]
+STATION_ID = "081822"  # Sant Cugat Centre FGC
 
-def generate_image(trains):
-    img = Image.new("RGB", (WIDTH, HEIGHT), "white")
-    draw = ImageDraw.Draw(img)
+# MET.NO погода (без API-ключей)
+WEATHER_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=41.47&lon=2.08"
 
-    font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 80)
-    font_subtitle = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 50)
-    font_text = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 70)
+UA = {"User-Agent": "Mozilla/5.0 (PocketBookTablo)"}
 
-    # Логотип
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+OUTPUT_FILE = "fgc_sant_cugat_pocketbook.png"
+
+
+# ============================
+# Получение погоды
+# ============================
+
+def get_weather():
     try:
-        logo = Image.open(LOGO_PATH).convert("RGBA")
-        logo.thumbnail((200, 200))
-        img.paste(logo, (WIDTH - 220, 40), logo)
-    except FileNotFoundError:
-        draw.text((WIDTH - 300, 50), "[FGC]", font=font_subtitle, fill="black")
+        r = requests.get(WEATHER_URL, headers=UA, timeout=10)
+        r.raise_for_status()
+        data = r.json()
 
-    # Заголовок
-    draw.text((50, 50), "Sant Cugat Centre", font=font_title, fill="black")
-    draw.line((50, 150, WIDTH - 50, 150), fill="black", width=4)
+        temp = data["properties"]["timeseries"][0]["data"]["instant"]["details"]["air_temperature"]
 
-    # Время обновления
-    now_str = datetime.datetime.now().strftime("%H:%M")
-    draw.text((50, 160), f"Обновлено: {now_str}", font=font_subtitle, fill="gray")
+        # Пытаемся получить "ясно/облачно/дождь"
+        symbol = "—"
+        try:
+            wx = data["properties"]["timeseries"][0]["data"]["next_1_hours"]["summary"]["symbol_code"]
+            if "clearsky" in wx:
+                symbol = "☀"
+            elif "cloud" in wx:
+                symbol = "☁"
+            elif "rain" in wx:
+                symbol = "🌧"
+            elif "snow" in wx:
+                symbol = "❄"
+        except:
+            pass
 
-    # Список поездов
-    y = 250
-    for direction, mins in trains:
-        time_str = "Сейчас" if mins <= 0 else f"{mins} мин"
-        draw.text((50, y), f"{direction:<15} {time_str}", font=font_text, fill="black")
-        y += 120
+        return f"{temp:.0f}°C", symbol
 
-    img.save(IMAGE_PATH)
-
-def main():
-    try:
-        feed = fetch_gtfs()
-        trains = parse_trains(feed)
-        if not trains:
-            trains = [("Нет данных", 0)] * 6
-    except Exception:
-        trains = [("Резерв", i*10) for i in range(6)]
-    generate_image(trains)
-
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        print("Weather error:", e
