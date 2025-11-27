@@ -1,3 +1,4 @@
 requests
-google-gtfs-realtime-bindings
+protobuf
+gtfs-realtime-bindings
 Pillow
