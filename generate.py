@@ -1,104 +1,175 @@
+#!/usr/bin/env python3
+"""
+Улучшенный скрипт для FGC табло на PocketBook 632 (E Ink оптимизация).
+"""
+
+import csv
+import io
+import logging
+import os
+import sys
+import time
+import zipfile
+from datetime import datetime, timezone
+from typing import List, Dict, Optional
+
 import requests
 from PIL import Image, ImageDraw, ImageFont
-from datetime import datetime
+import gtfs_realtime_pb2
 
-WIDTH = 1072
-HEIGHT = 1448
+# Настройка
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-STATION_ID = "081822"  # Sant Cugat Centre
-API_URL = f"https://app.fgc.cat/api/transit/estacions/{STATION_ID}"
+STATION_NAME = os.getenv('STATION_NAME', 'Sant Cugat Centre')
+GTFS_STATIC_URL = 'https://dadesobertes.fgc.cat/gtfs/google_transit.zip'
+GTFS_RT_URL = 'https://dadesobertes.fgc.cat/gtfs_rt/trip_updates'
+OUTPUT_FILE = 'board.png'
+IMAGE_SIZE = (800, 600)  # Landscape для PocketBook 632 6"
+MAX_TRAINS = 10
+NEXT_HOURS = 1
 
-UA = {"User-Agent": "Mozilla/5.0 (PocketBookTablo)"}
+# E Ink режим (по умолчанию)
+EINK_MODE = os.getenv('EINK_MODE', '1').lower() == '1'
 
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+session = requests.Session()
+session.headers.update({'User-Agent': 'FGC-Board-PB632/1.0'})
 
-OUTPUT_FILE = "fgc_sant_cugat_pocketbook.png"
+# Функции fetch без изменений (get_stop_id, fetch_trains, retry_request) — копируйте из предыдущего
 
+def retry_request(url: str, max_retries: int = 3, timeout: int = 10) -> Optional[bytes]:
+    for attempt in range(max_retries):
+        try:
+            resp = session.get(url, timeout=timeout)
+            resp.raise_for_status()
+            return resp.content
+        except Exception as e:
+            logger.warning(f"Попытка {attempt+1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+    logger.error(f"Failed {url}")
+    return None
 
-# ============================
-# Получение поездов (СТАБИЛЬНЫЙ API)
-# ============================
-
-def get_trains():
-    trains = []
+def get_stop_id(station_name: str) -> Optional[str]:
+    data = retry_request(GTFS_STATIC_URL)
+    if not data:
+        return None
     try:
-        r = requests.get(API_URL, headers=UA, timeout=10)
-        r.raise_for_status()
-        data = r.json()
+        z = zipfile.ZipFile(io.BytesIO(data))
+        with z.open('stops.txt') as f:
+            reader = csv.DictReader(io.TextIOWrapper(f, encoding='utf-8'))
+            for row in reader:
+                if station_name.lower() in row['stop_name'].lower():
+                    logger.info(f"Stop_id: {row['stop_id']}")
+                    return row['stop_id']
     except Exception as e:
-        print("FGC API error:", e)
-        return trains
+        logger.error(f"stops.txt error: {e}")
+    return None
 
-    # JSON-структура в этом API другая
-    departures = data.get("properCirculacions", [])
+def fetch_trains(stop_id: str) -> List[Dict[str, str]]:
+    data = retry_request(GTFS_RT_URL)
+    if not data:
+        return []
+    try:
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(data)
+        trains = []
+        now_ts = datetime.now(timezone.utc).timestamp()
+        end_ts = now_ts + (NEXT_HOURS * 3600)
+        for entity in feed.entity:
+            if entity.HasField('trip_update'):
+                tu = entity.trip_update
+                for stu in tu.stop_time_update:
+                    if (stu.stop_id == stop_id and
+                        stu.HasField('arrival') and
+                        stu.arrival.time > now_ts and stu.arrival.time < end_ts):
+                        headsign = tu.trip.headsign or tu.trip.route_id or 'Unknown'
+                        route_type = tu.trip.route_id.split('_')[-1] if '_' in tu.trip.route_id else ''
+                        arr_time = datetime.fromtimestamp(stu.arrival.time, tz=timezone.utc).strftime('%H:%M')
+                        trains.append({'time': arr_time, 'dir': headsign, 'type': route_type})
+        trains.sort(key=lambda t: t['time'])
+        logger.info(f"{len(trains)} поездов")
+        return trains[:MAX_TRAINS]
+    except Exception as e:
+        logger.error(f"GTFS-RT error: {e}")
+        return []
 
-    for dep in departures[:6]:
-        line = dep.get("linia", "")
-        dest = dep.get("destinacio", "")
-        mins = dep.get("minutsPerArribar", None)
+def generate_image(trains: List[Dict[str, str]], station: str):
+    """Генерация оптимизированная под E Ink PocketBook 632."""
+    if EINK_MODE:
+        # B/W bitmap для E Ink (black=0, white=255)
+        img = Image.new('1', IMAGE_SIZE, 0)  # Black background
+        text_color = 255  # White
+        logger.info("E Ink B/W mode")
+    else:
+        # Цветной preview
+        img = Image.new('RGB', IMAGE_SIZE, 'black')
+        text_color = 'white'
 
-        if not line or not dest or mins is None:
-            continue
-
-        direction = f"{line} → {dest}"
-        trains.append((direction, mins))
-
-    return trains
-
-
-# ============================
-# Генерация изображения
-# ============================
-
-def generate_image(trains):
-    img = Image.new("RGB", (WIDTH, HEIGHT), "white")
     draw = ImageDraw.Draw(img)
 
-    font_title = ImageFont.truetype(FONT_BOLD, 80)
-    font_time = ImageFont.truetype(FONT_REG, 40)
-    font_train = ImageFont.truetype(FONT_REG, 60)
+    # Шрифты (DejaVu — чёткие на E Ink)
+    try:
+        font_large = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 64)
+        font_med = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 48)
+        font_small = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 32)
+    except:
+        font_large = ImageFont.load_default()
+        font_med = ImageFont.load_default()
+        font_small = ImageFont.load_default()
 
-    # Заголовок
-    draw.text((40, 40), "Sant Cugat Centre", font=font_title, fill="black")
+    # Заголовок (центр)
+    bbox = draw.textbbox((0, 0), station, font=font_med)
+    text_w = bbox,[object Object], - bbox,[object Object],
+    draw.text((IMAGE_SIZE,[object Object], // 2 - text_w // 2, 20), station, fill=text_color, font=font_med)
 
-    # Линия
-    draw.line((40, 150, WIDTH - 40, 150), fill="black", width=4)
+    # Поезда: слева время (жирное), справа направление (right align)
+    y = 130
+    line_height = 90
+    for train in trains:
+        time_text = train['time']
+        dir_text = f"{train['dir']} {train['type']}".strip() or '---'
 
-    # Время обновления
-    now = datetime.now().strftime("%H:%M")
-    draw.text((40, 160), f"Обновлено: {now}", font=font_time, fill="gray")
+        # Время слева
+        bbox_time = draw.textbbox((0, 0), time_text, font=font_large)
+        draw.text((60, y), time_text, fill=text_color, font=font_large)
 
-    # Список поездов
-    y = 260
-    for direction, mins in trains:
-        draw.text((40, y), direction, font=font_train, fill="black")
+        # Направление справа (anchor right в Pillow 10+ или calc)
+        bbox_dir = draw.textbbox((0, 0), dir_text, font=font_med)
+        dir_w = bbox_dir,[object Object], - bbox_dir,[object Object],
+        right_x = IMAGE_SIZE,[object Object], - 60 - dir_w
+        draw.text((right_x, y), dir_text, fill=text_color, font=font_med)
 
-        right = "Сейчас" if mins == 0 else f"{mins} мин"
+        y += line_height
+        if y > IMAGE_SIZE,[object Object], - 120:
+            break
 
-        # Вместо textsize — textbbox (новый Pillow)
-        bbox = draw.textbbox((0, 0), right, font=font_train)
-        w = bbox[2] - bbox[0]
+    # Нет данных (центр, жирное)
+    if not trains:
+        no_data = "No trains"
+        bbox = draw.textbbox((0, 0), no_data, font=font_large)
+        text_w = bbox,[object Object], - bbox,[object Object],
+        draw.text((IMAGE_SIZE,[object Object], // 2 - text_w // 2, IMAGE_SIZE,[object Object], // 2), no_data, fill=text_color, font=font_large)
 
-        draw.text((WIDTH - 60 - w, y), right, font=font_train, fill="black")
+    # Футер: дата/время (центр, мелкий)
+    now_str = datetime.now().strftime('%d.%m %H:%M')
+    bbox = draw.textbbox((0, 0), now_str, font=font_small)
+    text_w = bbox,[object Object], - bbox,[object Object],
+    draw.text((IMAGE_SIZE,[object Object], // 2 - text_w // 2, IMAGE_SIZE,[object Object], - 70), now_str, fill=text_color, font=font_small)
 
-        y += 120
+    # Сохранить (lossless PNG)
+    img.save(OUTPUT_FILE, optimize=True, bits=1 if EINK_MODE else 8)
+    logger.info(f"Сохранено {OUTPUT_FILE} ({'E Ink B/W' if EINK_MODE else 'Color'})")
 
-    img.save(OUTPUT_FILE)
-    print("Saved", OUTPUT_FILE)
-
-
-# ============================
-# Главная логика
-# ============================
+def main():
+    logger.info("Генерация табло для PocketBook 632...")
+    stop_id = get_stop_id(STATION_NAME)
+    if not stop_id:
+        logger.error("Stop_id не найден!")
+        sys.exit(1)
+    trains = fetch_trains(stop_id)
+    generate_image(trains, STATION_NAME)
+    logger.info("Готово! Перенесите board.png на PocketBook.")
 
 if __name__ == "__main__":
-    print("Запуск скрипта генерации...")
-
-    trains = get_trains()
-
-    # Если поездов меньше 6 — добавляем пустые строки
-    while len(trains) < 6:
-        trains.append(("—", 0))
-
-    generate_image(trains)
+    main()
