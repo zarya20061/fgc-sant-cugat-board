@@ -49,18 +49,15 @@ jobs:
             exit 1
           else
             echo "✅ PNG создан успешно!"
+            ls -lh fgc_sant_cugat_pocketbook.png
+            file fgc_sant_cugat_pocketbook.png
           fi
 
-      # 7. Коммитим изменения, если PNG обновился
-      - name: Commit and push if changed
+      # 7. Гарантированный коммит и пуш
+      - name: Commit and push PNG
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet; then
-            echo "Изменения найдены, выполняем коммит..."
-            git add fgc_sant_cugat_pocketbook.png
-            git commit -m "Update board image"
-            git push
-          else
-            echo "Нет изменений, коммит не требуется."
-          fi
+          git add fgc_sant_cugat_pocketbook.png
+          git commit -m "Update board image" || echo "Нет изменений для коммита"
+          git push
