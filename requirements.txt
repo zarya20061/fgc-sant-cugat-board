@@ -1,4 +1,4 @@
 requests
 protobuf
-gtfs-realtime-bindings
+gtfs-realtime-bindings-py3
 Pillow
