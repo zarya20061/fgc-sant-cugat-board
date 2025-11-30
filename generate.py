@@ -68,9 +68,9 @@ def generate():
     img = Image.new("RGB", (1072, 1448), "white")
     draw = ImageDraw.Draw(img)
     try:
-        f1 = ImageFont.truetype("DejaVuSans-Bold.ttf", 92)
-        f2 = ImageFont.truetype("DejaVuSans.ttf", 70)
-        f3 = ImageFont.truetype("DejaVuSans-Bold.ttf", 84)
+        f1 = ImageFont.truetype("DejaVuSans-Bold.ttf", 50)
+        f2 = ImageFont.truetype("DejaVuSans.ttf", 50)
+        f3 = ImageFont.truetype("DejaVuSans-Bold.ttf", 50)
     except:
         f1 = f2 = f3 = ImageFont.load_default()
 
@@ -90,3 +90,4 @@ def generate():
 
 if __name__ == "__main__":
     generate()
+
