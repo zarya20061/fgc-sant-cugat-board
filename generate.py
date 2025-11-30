@@ -1,8 +1,8 @@
-# generate.py — Живое табло FGC Sant Cugat Centre (GTFS Realtime + fallback)
+# generate.py — Реальное табло FGC Sant Cugat Centre (GTFS Realtime JSON, тест 30.11.2025)
 import requests
 from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
-from gtfs_realtime_pb2 import FeedMessage
+import json
 
 STOP_ID = "70037"  # Sant Cugat Centre
 
@@ -15,40 +15,24 @@ FALLBACK = {
 
 def get_realtime():
     try:
-        url = "https://dadesobertes.fgc.cat/gtfs-realtime/trip-updates"
-        headers = {"Accept": "application/x-protobuf"}
-        r = requests.get(url, headers=headers, timeout=15)
-        if r.status_code != 200:
-            return None
-
-        feed = FeedMessage()
-        feed.ParseFromString(r.content)
-
-        now = datetime.now()
+        url = "https://fgc.opendatasoft.com/api/records/1.0/search/?dataset=trip-updates-gtfs_realtime&q=&rows=50&facet=route_id&facet=stop_id&refine.stop_id=" + STOP_ID + "&refine.route_id=S1 OR refine.route_id=S2"
+        r = requests.get(url, timeout=15).json()
+        
         deps = []
-
-        for entity in feed.entity:
-            if not entity.HasField("trip_update"):
-                continue
-            tu = entity.trip_update
-            route = tu.trip.route_id
-            if route not in ["S1", "S2"]:
-                continue
-
-            for stu in tu.stop_time_update:
-                if stu.stop_id != STOP_ID:
-                    continue
-                if not stu.arrival.time:
-                    continue
-
-                arrival = datetime.fromtimestamp(stu.arrival.time)
-                if arrival > now - timedelta(minutes=1):
-                    direction = "Barcelona" if "Barcelona" in str(tu) else "Terrassa/Sabadell"
-                    deps.append({"line": route, "direction": direction, "time": arrival})
-
+        now = datetime.now()
+        for record in r.get("records", []):
+            fields = record["fields"]
+            if "arrival_time" in fields:
+                arrival = datetime.fromtimestamp(fields["arrival_time"])
+                if arrival > now:
+                    line = fields.get("route_id", "S?")
+                    direction = "Barcelona" if "Barcelona" in str(fields) else "Terrassa/Sabadell"
+                    deps.append({"line": line, "direction": direction, "time": arrival})
+        
         deps.sort(key=lambda x: x["time"])
         return deps[:6] if deps else None
-    except:
+    except Exception as e:
+        print(f"API error: {e}")
         return None
 
 def get_fallback():
