@@ -1,19 +1,42 @@
 name: Обновлять каждую минуту
+
 on:
   schedule:
     - cron: '*/1 * * * *'
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write           # ← ЭТО ВАЖНО (даёт права на запись)
+      pages: write
+      id-token: write
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: gh-pages             # ← забираем gh-pages ветку
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
       - run: pip install -r requirements.txt
+
       - run: python generate.py
+
+      - name: Commit & Push PNG
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add fgc_sant_cugat.png
+          git commit -m "update tablo $(date +%H:%M)" || echo "nothing to commit"
+          git push origin gh-pages --force   # ← force, чтобы точно залить
+
       - uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: .
+          force_orphan: true        # ← это чистит старые файлы, оставляет только PNG
+          commit_message: "auto update tablo"
