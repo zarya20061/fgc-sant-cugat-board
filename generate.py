@@ -55,7 +55,7 @@ draw = ImageDraw.Draw(img)
 font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 title = ImageFont.truetype(font_path, 72)
 text  = ImageFont.truetype(font_path, 60)
-timef = ImageFont.truetype(font_path, 70)
+timef = ImageFont.truetype(font_path, 60)
 
 y = 100
 draw.text((50, y), "FGC Sant Cugat Centre", fill=0, font=title); y += 120
@@ -63,8 +63,9 @@ draw.text((50, y), datetime.now().strftime("%d.%m %H:%M"), fill=0, font=text); y
 
 for d in deps:
     draw.text((50, y), f"{d['line']} → {d['direction']}", fill=0, font=text)
-    draw.text((1022, y), timer(d['time']), fill=0, font=timef, anchor="ra")
+    draw.text((800, y), timer(d['time']), fill=0, font=timef, anchor="ra")
     y += 170
 
 img.save("fgc_sant_cugat.png")
 print("Готово!")
+
