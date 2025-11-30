@@ -1,116 +1,108 @@
+# generate.py — Живое табло FGC Sant Cugat Centre (GTFS Realtime + fallback)
 import requests
-import zipfile
-import io
-import csv
-from datetime import datetime, timedelta, time, date
+from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
+from gtfs_realtime_pb2 import FeedMessage
 
-# Download GTFS ZIP
-url = 'https://dadesobertes.fgc.cat/download/file/google_transit.zip'
-response = requests.get(url)
-if response.status_code != 200:
-    raise ValueError("Failed to download GTFS data")
+STOP_ID = "70037"  # Sant Cugat Centre
 
-zip_content = io.BytesIO(response.content)
+FALLBACK = {
+    "S1 → Barcelona": [5, 15, 25, 35, 45, 55],
+    "S1 ← Terrassa":  [2, 12, 22, 32, 42, 52],
+    "S2 → Barcelona": [8, 18, 28, 38, 48, 58],
+    "S2 ← Sabadell":  [0, 10, 20, 30, 40, 50],
+}
 
-with zipfile.ZipFile(zip_content) as z:
-    # Find stop_id for "Sant Cugat"
-    stop_id = None
-    with io.StringIO(z.read('stops.txt').decode('utf-8')) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if row['stop_name'].strip() == 'Sant Cugat':
-                stop_id = row['stop_id']
-                break
-    if not stop_id:
-        raise ValueError("Station 'Sant Cugat' not found in stops.txt")
+def get_realtime():
+    try:
+        url = "https://dadesobertes.fgc.cat/gtfs-realtime/trip-updates"
+        headers = {"Accept": "application/x-protobuf"}
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None
 
-    # Get active service_ids for today
-    today = date.today()
-    weekday = today.weekday()  # 0 = Monday
-    days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
-    day_name = days[weekday]
-    service_ids = set()
+        feed = FeedMessage()
+        feed.ParseFromString(r.content)
 
-    if 'calendar.txt' in z.namelist():
-        with io.StringIO(z.read('calendar.txt').decode('utf-8')) as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row['start_date'] <= today.strftime('%Y%m%d') <= row['end_date'] and row[day_name] == '1':
-                    service_ids.add(row['service_id'])
+        now = datetime.now()
+        deps = []
 
-    # Handle exceptions from calendar_dates.txt
-    if 'calendar_dates.txt' in z.namelist():
-        with io.StringIO(z.read('calendar_dates.txt').decode('utf-8')) as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row['date'] == today.strftime('%Y%m%d'):
-                    if row['exception_type'] == '1':
-                        service_ids.add(row['service_id'])
-                    elif row['exception_type'] == '2' and row['service_id'] in service_ids:
-                        service_ids.remove(row['service_id'])
+        for entity in feed.entity:
+            if not entity.HasField("trip_update"):
+                continue
+            tu = entity.trip_update
+            route = tu.trip.route_id
+            if route not in ["S1", "S2"]:
+                continue
 
-    # Get trips for active services with headsign
-    trips = {}
-    with io.StringIO(z.read('trips.txt').decode('utf-8')) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if row['service_id'] in service_ids:
-                trips[row['trip_id']] = row['trip_headsign']
+            for stu in tu.stop_time_update:
+                if stu.stop_id != STOP_ID:
+                    continue
+                if not stu.arrival.time:
+                    continue
 
-    # Get upcoming stop_times for the stop_id within next hour
-    stop_times_list = []
+                arrival = datetime.fromtimestamp(stu.arrival.time)
+                if arrival > now - timedelta(minutes=1):
+                    direction = "Barcelona" if "Barcelona" in str(tu) else "Terrassa/Sabadell"
+                    deps.append({"line": route, "direction": direction, "time": arrival})
+
+        deps.sort(key=lambda x: x["time"])
+        return deps[:6] if deps else None
+    except:
+        return None
+
+def get_fallback():
     now = datetime.now()
-    current_time = now.time()
-    one_hour_later = (now + timedelta(hours=1)).time()
+    hour = now.hour
+    peak = 7 <= hour <= 9 or 17 <= hour <= 19
+    step = 5 if peak else 10
 
-    with io.StringIO(z.read('stop_times.txt').decode('utf-8')) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if row['stop_id'] == stop_id and row['trip_id'] in trips:
-                arrival_str = row['arrival_time']
-                hours, minutes, seconds = map(int, arrival_str.split(':'))
-                if hours >= 24:
-                    hours -= 24  # Handle overnight trips
-                arrival_time = time(hours, minutes, seconds)
-                if current_time <= arrival_time <= one_hour_later:
-                    stop_times_list.append({
-                        'arrival_time': arrival_time,
-                        'headsign': trips[row['trip_id']]
-                    })
+    deps = []
+    base = list(range(0, 60, step))
+    offsets = {"S1": 2, "S2": 8}
 
-    # Sort by arrival time and limit to 10
-    stop_times_list.sort(key=lambda x: x['arrival_time'])
-    stop_times_list = stop_times_list[:10]
+    for line, offset in offsets.items():
+        mins = [(m + offset) % 60 for m in base]
+        for m in mins:
+            t = now.replace(minute=0, second=0, microsecond=0) + timedelta(minutes=m)
+            if t <= now:
+                t += timedelta(hours=1)
+            if t < now + timedelta(hours=2):
+                direction = "Barcelona" if m < 30 else "Terrassa/Sabadell"
+                deps.append({"line": line, "direction": direction, "time": t})
+    deps.sort(key=lambda x: x["time"])
+    return deps[:6]
 
-# Generate PNG image
-width, height = 800, 600
-image = Image.new('RGB', (width, height), color='black')
-draw = ImageDraw.Draw(image)
+def timer(t):
+    mins = int((t - datetime.now()).total_seconds() / 60)
+    return "Сейчас!" if mins <= 0 else f"Осталось: {mins}м"
 
-# Load fonts (use system fonts for reliability in GitHub Actions)
-try:
-    font_large = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 40)
-    font_normal = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 20)
-except IOError:
-    font_large = ImageFont.load_default()  # Fallback
-    font_normal = ImageFont.load_default()
+def generate():
+    data = get_realtime()
+    deps = data if data else get_fallback()
 
-# Draw header
-draw.text((width // 2, 20), "Train Schedule for Sant Cugat", fill='white', font=font_normal, anchor='mt')
+    img = Image.new("RGB", (1072, 1448), "white")
+    draw = ImageDraw.Draw(img)
+    try:
+        f1 = ImageFont.truetype("DejaVuSans-Bold.ttf", 92)
+        f2 = ImageFont.truetype("DejaVuSans.ttf", 70)
+        f3 = ImageFont.truetype("DejaVuSans-Bold.ttf", 84)
+    except:
+        f1 = f2 = f3 = ImageFont.load_default()
 
-# Draw trains
-y_pos = 80
-for entry in stop_times_list:
-    time_str = entry['arrival_time'].strftime('%H:%M')
-    draw.text((50, y_pos), time_str, fill='white', font=font_large)
-    draw.text((400, y_pos), entry['headsign'], fill='white', font=font_large)
-    y_pos += 50
+    y = 70
+    draw.text((50, y), "FGC Sant Cugat Centre", fill=0, font=f1); y += 140
+    draw.text((50, y), datetime.now().strftime("%d.%m %H:%M:%S"), fill=0, font=f2); y += 110
+    draw.text((50, y), "Линия → Направление          Осталось", fill=0, font=f2); y += 120
 
-# Draw footer with current date/time
-footer_text = now.strftime('%Y-%m-%d %H:%M:%S')
-draw.text((width // 2, height - 20), footer_text, fill='white', font=font_normal, anchor='mb')
+    for d in deps:
+        draw.text((50, y), f"{d['line']} → {d['direction']}", fill=0, font=f2)
+        draw.text((690, y), timer(d['time']), fill=0, font=f3)
+        y += 128
 
-# Save image
-image.save('schedule.png')
-print("Image generated successfully: schedule.png")
+    img.save("fgc_sant_cugat.png")
+    source = "GTFS Realtime" if data else "fallback"
+    print(f"Готово! Источник: {source}")
+
+if __name__ == "__main__":
+    generate()
