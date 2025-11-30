@@ -1,2 +1,4 @@
+Pillow
 requests
-pillow
+gtfs-realtime-bindings
+protobuf
